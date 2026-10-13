@@ -8,6 +8,9 @@ use deno_ast::EmitOptions;
 use deno_ast::MediaType;
 use deno_ast::SourceMapOption;
 use deno_ast::TranspileModuleOptions;
+use deno_ast::swc;
+use deno_ast::swc::ecma_visit::VisitMut;
+use deno_ast::swc::ecma_visit::VisitMutWith;
 use deno_core::ModuleSpecifier;
 use deno_core::anyhow;
 use deno_core::anyhow::Context;
@@ -22,6 +25,96 @@ use crate::args::Flags;
 use crate::args::SourceMapMode;
 use crate::args::TranspileFlags;
 use crate::factory::CliFactory;
+
+struct TranspileImportExtensionRewriter;
+
+impl VisitMut for TranspileImportExtensionRewriter {
+  fn visit_mut_module_decl(&mut self, node: &mut swc::ast::ModuleDecl) {
+    match node {
+      swc::ast::ModuleDecl::Import(import_decl) => {
+        rewrite_import_extension(import_decl.src.as_mut());
+      }
+      swc::ast::ModuleDecl::ExportAll(export_all) => {
+        rewrite_import_extension(export_all.src.as_mut());
+      }
+      swc::ast::ModuleDecl::ExportNamed(export_named) => {
+        if let Some(src) = &mut export_named.src {
+          rewrite_import_extension(src.as_mut());
+        }
+      }
+      swc::ast::ModuleDecl::TsImportEquals(import_equals) => {
+        if let swc::ast::TsModuleRef::TsExternalModuleRef(external) =
+          &mut import_equals.module_ref
+        {
+          rewrite_import_extension(&mut external.expr);
+        }
+      }
+      _ => {}
+    }
+
+    node.visit_mut_children_with(self);
+  }
+
+  fn visit_mut_call_expr(&mut self, node: &mut swc::ast::CallExpr) {
+    if matches!(&node.callee, swc::ast::Callee::Import(_))
+      && let Some(argument) = node.args.first_mut()
+      && argument.spread.is_none()
+      && let swc::ast::Expr::Lit(swc::ast::Lit::Str(specifier)) =
+        &mut *argument.expr
+    {
+      rewrite_import_extension(specifier);
+    }
+
+    node.visit_mut_children_with(self);
+  }
+}
+
+fn rewrite_import_extension(specifier: &mut swc::ast::Str) {
+  let value = specifier.value.to_string_lossy();
+  let Some(rewritten) = rewritten_import_specifier(value.as_ref()) else {
+    return;
+  };
+  specifier.value = rewritten.into();
+  specifier.raw = None;
+}
+
+fn rewritten_import_specifier(specifier: &str) -> Option<String> {
+  if !(specifier.starts_with("./")
+    || specifier.starts_with("../")
+    || specifier.starts_with('/')
+    || specifier.starts_with("file:"))
+  {
+    return None;
+  }
+
+  let suffix_start = specifier
+    .find(|c| c == '?' || c == '#')
+    .unwrap_or(specifier.len());
+  let (path, suffix) = specifier.split_at(suffix_start);
+
+  if path.ends_with(".d.ts")
+    || path.ends_with(".d.mts")
+    || path.ends_with(".d.cts")
+  {
+    return None;
+  }
+
+  let rewritten_path = if let Some(stem) = path.strip_suffix(".tsx") {
+    format!("{stem}.js")
+  } else if let Some(stem) = path.strip_suffix(".jsx") {
+    format!("{stem}.js")
+  } else if let Some(stem) = path.strip_suffix(".mts") {
+    format!("{stem}.mjs")
+  } else if let Some(stem) = path.strip_suffix(".cts") {
+    format!("{stem}.cjs")
+  } else if let Some(stem) = path.strip_suffix(".ts") {
+    format!("{stem}.js")
+  } else {
+    return None;
+  };
+
+  Some(format!("{rewritten_path}{suffix}"))
+}
 
 pub async fn transpile(
   flags: Arc<Flags>,
@@ -112,14 +205,21 @@ pub async fn transpile(
     let source_code = String::from_utf8(source_bytes.into_owned())
       .with_context(|| format!("{} is not valid UTF-8", file_path.display()))?;
 
-    let parsed_source = deno_ast::parse_module(deno_ast::ParseParams {
-      specifier: specifier.clone(),
-      text: source_code.into(),
-      media_type: *media_type,
-      capture_tokens: false,
-      scope_analysis: false,
-      maybe_syntax: None,
-    })?;
+    let parsed_source = deno_ast::parse_module_with_post_process(
+      deno_ast::ParseParams {
+        specifier: specifier.clone(),
+        text: source_code.into(),
+        media_type: *media_type,
+        capture_tokens: false,
+        scope_analysis: false,
+        maybe_syntax: None,
+      },
+      |mut module, _| {
+        let mut rewriter = TranspileImportExtensionRewriter;
+        rewriter.visit_mut_module(&mut module);
+        module
+      },
+    )?;
 
     // Use transpile options from deno.json, with source map overridden by CLI flag
     let transpile_and_emit_options = compiler_options_resolver

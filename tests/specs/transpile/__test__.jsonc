@@ -33,6 +33,30 @@
         }
       ]
     },
+    "rewrite_import_extensions": {
+      "steps": [
+        {
+          "args": "transpile rewrite_imports_main.ts rewrite_imports_dep.ts --outdir dist",
+          "output": "[WILDCARD]deno transpile is experimental and subject to changes\nEmit [WILDCARD]dist[WILDCARD]rewrite_imports_main.js\nEmit [WILDCARD]dist[WILDCARD]rewrite_imports_dep.js\n"
+        },
+        {
+          "args": "run dist/rewrite_imports_main.js",
+          "output": "42 43 ./rewrite_imports_dep.ts\n"
+        }
+      ]
+    },
+    "rewrite_import_extensions_cts": {
+      "steps": [
+        {
+          "args": "transpile rewrite_imports_cjs.cts rewrite_imports_cjs_dep.cts --outdir dist",
+          "output": "[WILDCARD]deno transpile is experimental and subject to changes\nEmit [WILDCARD]dist[WILDCARD]rewrite_imports_cjs.cjs\nEmit [WILDCARD]dist[WILDCARD]rewrite_imports_cjs_dep.cjs\n"
+        },
+        {
+          "args": "run dist/rewrite_imports_cjs.cjs",
+          "output": "44\n"
+        }
+      ]
+    },
     "source_map_inline": {
       "args": "transpile main.ts --source-map inline",
       "output": "source_map_inline.out"
