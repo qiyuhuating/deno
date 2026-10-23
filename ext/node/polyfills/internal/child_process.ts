@@ -2802,8 +2802,12 @@ function setupChannel(
         if (isInternal(msg)) {
           const cmd = internalCmdName(msg);
           if (cmd === "CLOSE") {
-            // Channel closed.
-            target.disconnect();
+            // The child-exit handler may have already disconnected the IPC
+            // channel while the read was pending. Treat the late CLOSE as a
+            // no-op instead of emitting ERR_IPC_DISCONNECTED.
+            if (target.connected) {
+              target.disconnect();
+            }
             return;
           } else if (cmd === "HANDLE" && typeof rawFd === "number") {
             if (serialization === "json") {
