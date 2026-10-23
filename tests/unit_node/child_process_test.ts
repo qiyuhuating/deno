@@ -1855,3 +1855,18 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "[node/child_process fork] IPC CLOSE after exit does not disconnect twice",
+  ignore: Deno.build.os === "windows",
+  fn() {
+    const fixture = path.join(
+      path.dirname(path.fromFileUrl(import.meta.url)),
+      "testdata/ipc_disconnect_exit_race.mjs",
+    );
+    const result = spawnSync(Deno.execPath(), ["run", "-A", fixture], {
+      encoding: "utf-8",
+    });
+    assertEquals(result.status, 0, result.stderr);
+  },
+});
